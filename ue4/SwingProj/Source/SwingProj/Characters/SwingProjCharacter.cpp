@@ -1,7 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SwingProjCharacter.h"
+
+#include "DrawDebugHelpers.h"
+#include "Actors/Interactive/RopeSwingAttachmentActor.h"
 #include "Camera/CameraComponent.h"
+#include "Chaos/ChaosDebugDraw.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -53,7 +57,7 @@ void ASwingProjCharacter::RegisterInteractiveActor(AInteractiveActor* Interactiv
 
 void ASwingProjCharacter::UnRegisterInteractiveActor(AInteractiveActor* InteractiveActor)
 {
-	AvailableInteractiveActors.Remove(InteractiveActor);
+	AvailableInteractiveActors.RemoveSingleSwap(InteractiveActor);
 }
 
 TArray<AInteractiveActor*> ASwingProjCharacter::GetCurrentAvailableInteractiveActors() const
@@ -70,6 +74,7 @@ void ASwingProjCharacter::SetupPlayerInputComponent(class UInputComponent* Playe
 	check(PlayerInputComponent);
 	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
 	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
+	PlayerInputComponent->BindAction("AttachToRope", IE_Pressed, this, &ASwingProjCharacter::AttachToRope);
 
 	PlayerInputComponent->BindAxis("MoveForward", this, &ASwingProjCharacter::MoveForward);
 	PlayerInputComponent->BindAxis("MoveRight", this, &ASwingProjCharacter::MoveRight);
@@ -128,4 +133,35 @@ void ASwingProjCharacter::MoveRight(float Value)
 		// add movement in that direction
 		AddMovementInput(Direction, Value);
 	}
+}
+
+void ASwingProjCharacter::AttachToRope()
+{
+	ARopeSwingAttachmentActor* AttachActor = nullptr;
+
+	for (uint8 i = 0; i < GetCurrentAvailableInteractiveActors().Num(); ++i)
+	{
+		AInteractiveActor* CurrentActor = GetCurrentAvailableInteractiveActors()[i];
+		if (CurrentActor->IsA<ARopeSwingAttachmentActor>())
+		{
+			AttachActor = StaticCast<ARopeSwingAttachmentActor*>(CurrentActor);
+			break;
+		}
+	}
+
+	if (!IsValid(AttachActor))
+	{
+		return;
+	}
+	
+	GEngine->AddOnScreenDebugMessage(1, 3.f, FColor::Green, FString::Printf(TEXT("Attached to actor: %s"), *AttachActor->GetName()));
+
+	FVector RopeVector = AttachActor->GetActorLocation() - GetActorLocation();
+	CurrentRopeVectorNormal = RopeVector.GetSafeNormal();
+	CurrentRopeLength = RopeVector.Size();
+
+	DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + RopeVector, FColor::Green, true, 3.f);
+	DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + CurrentRopeVectorNormal * 10.f, FColor::Red, true, 3.f, 0, 2);
+
+	
 }
