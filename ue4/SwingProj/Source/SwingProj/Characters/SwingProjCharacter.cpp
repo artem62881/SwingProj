@@ -8,14 +8,17 @@
 #include "Chaos/ChaosDebugDraw.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
+#include "Components/MovementComponents/SPBaseCharacterMovementComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "Kismet/KismetMathLibrary.h"
 
 //////////////////////////////////////////////////////////////////////////
 // ASwingProjCharacter
 
-ASwingProjCharacter::ASwingProjCharacter()
+ASwingProjCharacter::ASwingProjCharacter(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer.SetDefaultSubobjectClass<USPBaseCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
 {
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
@@ -30,6 +33,7 @@ ASwingProjCharacter::ASwingProjCharacter()
 	bUseControllerRotationRoll = false;
 
 	// Configure character movement
+	BaseCharacterMovementComponent = StaticCast<USPBaseCharacterMovementComponent*>(GetCharacterMovement());
 	GetCharacterMovement()->bOrientRotationToMovement = true; // Character moves in the direction of input...	
 	GetCharacterMovement()->RotationRate = FRotator(0.0f, 540.0f, 0.0f); // ...at this rotation rate
 	GetCharacterMovement()->JumpZVelocity = 600.f;
@@ -50,6 +54,20 @@ ASwingProjCharacter::ASwingProjCharacter()
 	// are set in the derived blueprint asset named MyCharacter (to avoid direct content references in C++)
 }
 
+USPBaseCharacterMovementComponent* ASwingProjCharacter::GetBaseCharacterMovementComponent() const
+{
+	return BaseCharacterMovementComponent;
+}
+
+void ASwingProjCharacter::Jump()
+{
+	Super::Jump();
+	if (bIsSwinging)
+	{
+		DettachFromRope();
+	}
+}
+
 void ASwingProjCharacter::RegisterInteractiveActor(AInteractiveActor* InteractiveActor)
 {
 	AvailableInteractiveActors.AddUnique(InteractiveActor);
@@ -65,6 +83,11 @@ TArray<AInteractiveActor*> ASwingProjCharacter::GetCurrentAvailableInteractiveAc
 	return AvailableInteractiveActors;
 }
 
+ARopeSwingAttachmentActor* ASwingProjCharacter::GetCurrentRopeSwingAttachActor() const
+{
+	return CurrentRopeSwingAttachActor;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Input
 
@@ -75,7 +98,7 @@ void ASwingProjCharacter::SetupPlayerInputComponent(class UInputComponent* Playe
 	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
 	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
 	PlayerInputComponent->BindAction("AttachToRope", IE_Pressed, this, &ASwingProjCharacter::AttachToRope);
-
+	
 	PlayerInputComponent->BindAxis("MoveForward", this, &ASwingProjCharacter::MoveForward);
 	PlayerInputComponent->BindAxis("MoveRight", this, &ASwingProjCharacter::MoveRight);
 
@@ -86,6 +109,48 @@ void ASwingProjCharacter::SetupPlayerInputComponent(class UInputComponent* Playe
 	PlayerInputComponent->BindAxis("TurnRate", this, &ASwingProjCharacter::TurnAtRate);
 	PlayerInputComponent->BindAxis("LookUp", this, &APawn::AddControllerPitchInput);
 	PlayerInputComponent->BindAxis("LookUpRate", this, &ASwingProjCharacter::LookUpAtRate);
+}
+
+void ASwingProjCharacter::UpdateRopeSwing(float DeltaTime)
+{
+	if (!bIsSwinging || !IsValid(CurrentRopeSwingAttachActor))
+	{
+		return;
+	}
+	
+	CurrentRopeVector = CurrentRopeSwingAttachActor->GetActorLocation() - GetActorLocation();
+	CurrentRopeVectorNormal = CurrentRopeVector.GetSafeNormal();
+	if (FMath::IsNearlyEqual(CurrentRopeVector.Size(), CurrentRopeLength, 0.1f) || CurrentRopeVector.Size() > CurrentRopeLength)
+	{
+		bIsRopeStretched = true;
+	}
+	else
+	{
+		bIsRopeStretched = false;
+	}
+	
+	FVector RopeAccel = FVector::DotProduct(-CurrentRopeVectorNormal, GetVelocity().GetSafeNormal()) * CurrentRopeVector * FMath::Abs(GetCharacterMovement()->GetGravityZ()) * RopeForceRatio;
+	DrawDebugRopeSwing();
+	
+	if (bIsRopeStretched)
+	{
+		GetCharacterMovement()->AddForce(RopeAccel);		
+	}
+	
+	//DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + RopeAccel / 10.f, FColor::Purple, false, -1.f, 0, 2);
+}
+
+void ASwingProjCharacter::DrawDebugRopeSwing()
+{
+	if (!bIsRopeStretched)
+	{
+		DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + CurrentRopeVector, FColor::Green, false, -1, 0, 2);
+	}
+	else
+	{
+		DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + CurrentRopeVector, FColor::Red, false, -1, 0, 2);
+	}
+	
 }
 
 void ASwingProjCharacter::TurnAtRate(float Rate)
@@ -103,7 +168,7 @@ void ASwingProjCharacter::LookUpAtRate(float Rate)
 void ASwingProjCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-
+	UpdateRopeSwing(DeltaTime);
 }
 
 void ASwingProjCharacter::MoveForward(float Value)
@@ -137,31 +202,45 @@ void ASwingProjCharacter::MoveRight(float Value)
 
 void ASwingProjCharacter::AttachToRope()
 {
-	ARopeSwingAttachmentActor* AttachActor = nullptr;
+	if (bIsSwinging)
+	{
+		return;
+	}
+	CurrentRopeSwingAttachActor = nullptr;
 
 	for (uint8 i = 0; i < GetCurrentAvailableInteractiveActors().Num(); ++i)
 	{
 		AInteractiveActor* CurrentActor = GetCurrentAvailableInteractiveActors()[i];
 		if (CurrentActor->IsA<ARopeSwingAttachmentActor>())
 		{
-			AttachActor = StaticCast<ARopeSwingAttachmentActor*>(CurrentActor);
+			CurrentRopeSwingAttachActor = StaticCast<ARopeSwingAttachmentActor*>(CurrentActor);
 			break;
 		}
 	}
 
-	if (!IsValid(AttachActor))
+	if (!IsValid(CurrentRopeSwingAttachActor))
 	{
 		return;
 	}
 	
-	GEngine->AddOnScreenDebugMessage(1, 3.f, FColor::Green, FString::Printf(TEXT("Attached to actor: %s"), *AttachActor->GetName()));
+	CurrentRopeVector = CurrentRopeSwingAttachActor->GetActorLocation() - GetActorLocation();
+	CurrentRopeLength = CurrentRopeVector.Size();
+	bIsSwinging = true;
+}
 
-	FVector RopeVector = AttachActor->GetActorLocation() - GetActorLocation();
-	CurrentRopeVectorNormal = RopeVector.GetSafeNormal();
-	CurrentRopeLength = RopeVector.Size();
-
-	DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + RopeVector, FColor::Green, true, 3.f);
-	DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + CurrentRopeVectorNormal * 10.f, FColor::Red, true, 3.f, 0, 2);
-
+void ASwingProjCharacter::DettachFromRope()
+{
+	if (!GetBaseCharacterMovementComponent()->IsFalling() || !bIsSwinging)
+	{
+		return;
+	}
+	bIsSwinging = false;
 	
+	if (IsValid(CurrentRopeSwingAttachActor))
+	{
+		CurrentRopeSwingAttachActor = nullptr;
+	}
+	CurrentRopeVectorNormal = FVector::ZeroVector;
+	CurrentRopeLength = 0.f;
+	bIsRopeStretched = false;
 }
