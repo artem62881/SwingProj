@@ -9,6 +9,8 @@
 /**
  * 
  */
+class UStaticMeshComponent;
+
 UCLASS()
 class SWINGPROJ_API ARopeSwingAttachmentActor : public AInteractiveActor
 {
@@ -17,9 +19,11 @@ class SWINGPROJ_API ARopeSwingAttachmentActor : public AInteractiveActor
 public:
 	ARopeSwingAttachmentActor();
 
+	UStaticMeshComponent* GetMesh() const { return MeshComponent; };
+	
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	class UStaticMeshComponent* MeshComponent;
+	UStaticMeshComponent* MeshComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
 	float OverlapVolumeRadius = 200.f;

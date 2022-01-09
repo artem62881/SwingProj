@@ -12,7 +12,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/SpringArmComponent.h"
-#include "Kismet/KismetMathLibrary.h"
+#include "CableComponent.h"
 
 //////////////////////////////////////////////////////////////////////////
 // ASwingProjCharacter
@@ -52,6 +52,29 @@ ASwingProjCharacter::ASwingProjCharacter(const FObjectInitializer& ObjectInitial
 
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
 	// are set in the derived blueprint asset named MyCharacter (to avoid direct content references in C++)
+
+	HookMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Hook"));
+	HookMesh->SetupAttachment(GetMesh());
+	HookMesh->SetMobility(EComponentMobility::Movable);
+	
+	Rope = CreateDefaultSubobject<UCableComponent>(TEXT("Rope"));
+	Rope->SetupAttachment(GetMesh());
+	HookMesh->SetMobility(EComponentMobility::Movable);
+}
+
+void ASwingProjCharacter::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+
+	HookMesh->AttachToComponent(GetMesh(), FAttachmentTransformRules::KeepWorldTransform, FName(TEXT("HandGrabSocket")));
+	
+	Rope->CableLength = 100.f;
+	Rope->CableWidth = 3.f;
+	Rope->bEnableStiffness = true;
+	Rope->SetWorldLocation(GetMesh()->GetSocketLocation(FName(TEXT("BeltSocket"))));
+	Rope->AttachToComponent(GetMesh(), FAttachmentTransformRules::KeepWorldTransform, FName(TEXT("BeltSocket")));
+	//Rope->SetWorldLocation(GetMesh()->GetSocketLocation(FName(TEXT("HandGrabSocket"))));
+	Rope->SetAttachEndTo(this, FName(TEXT("HookMesh")));
 }
 
 USPBaseCharacterMovementComponent* ASwingProjCharacter::GetBaseCharacterMovementComponent() const
@@ -62,10 +85,15 @@ USPBaseCharacterMovementComponent* ASwingProjCharacter::GetBaseCharacterMovement
 void ASwingProjCharacter::Jump()
 {
 	Super::Jump();
-	if (bIsSwinging)
+	if (bIsSwinging && GetCharacterMovement()->IsFalling())
 	{
 		DettachFromRope();
 	}
+}
+
+FRotator ASwingProjCharacter::GetCurrentRopeRotation() const
+{
+	return CurrentRopeVector.ToOrientationRotator() - GetActorRotation();
 }
 
 void ASwingProjCharacter::RegisterInteractiveActor(AInteractiveActor* InteractiveActor)
@@ -97,7 +125,7 @@ void ASwingProjCharacter::SetupPlayerInputComponent(class UInputComponent* Playe
 	check(PlayerInputComponent);
 	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
 	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
-	PlayerInputComponent->BindAction("AttachToRope", IE_Pressed, this, &ASwingProjCharacter::AttachToRope);
+	PlayerInputComponent->BindAction("AttachToRope", IE_Pressed, this, &ASwingProjCharacter::ThrowRope);
 	
 	PlayerInputComponent->BindAxis("MoveForward", this, &ASwingProjCharacter::MoveForward);
 	PlayerInputComponent->BindAxis("MoveRight", this, &ASwingProjCharacter::MoveRight);
@@ -111,46 +139,73 @@ void ASwingProjCharacter::SetupPlayerInputComponent(class UInputComponent* Playe
 	PlayerInputComponent->BindAxis("LookUpRate", this, &ASwingProjCharacter::LookUpAtRate);
 }
 
+void ASwingProjCharacter::EquipRope()
+{
+	if (IsValid(Rope))
+	{
+		HookMesh->AttachToComponent(GetMesh(), FAttachmentTransformRules::KeepWorldTransform, FName(TEXT("HandGrabSocket")));
+		HookMesh->SetWorldLocation(GetMesh()->GetSocketLocation(FName(TEXT("HandGrabSocket"))));
+		Rope->CableLength = 100.f;
+		Rope->SetWorldLocation(GetMesh()->GetSocketLocation(FName(TEXT("BeltSocket"))));
+		Rope->AttachToComponent(GetMesh(), FAttachmentTransformRules::KeepWorldTransform, FName(TEXT("BeltSocket")));
+	}
+}
+
+void ASwingProjCharacter::ThrowRope()
+{
+	if (bIsSwinging || IsValid(CurrentRopeSwingAttachActor))
+	{
+		DettachFromRope();
+		return;
+	}
+	CurrentRopeSwingAttachActor = nullptr;
+
+	for (uint8 i = 0; i < GetCurrentAvailableInteractiveActors().Num(); ++i)
+	{
+		AInteractiveActor* CurrentActor = GetCurrentAvailableInteractiveActors()[i];
+		if (CurrentActor->IsA<ARopeSwingAttachmentActor>() && FVector::DotProduct(FollowCamera->GetForwardVector(), (CurrentActor->GetActorLocation() - GetActorLocation()).GetSafeNormal()) > 0.35f)
+		{
+			CurrentRopeSwingAttachActor = StaticCast<ARopeSwingAttachmentActor*>(CurrentActor);
+			break;
+		}
+	}
+
+	if (IsValid(CurrentRopeSwingAttachActor))
+	{
+		CurrentRopeVector = CurrentRopeSwingAttachActor->GetActorLocation() - GetActorLocation();
+		PlayAnimMontage(ThrowMontage);
+	}
+}
+
 void ASwingProjCharacter::UpdateRopeSwing(float DeltaTime)
 {
 	if (!bIsSwinging || !IsValid(CurrentRopeSwingAttachActor))
 	{
 		return;
 	}
+
+	//DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + CurrentRopeVector, FColor::Green, false, -1, 0, 2);
 	
 	CurrentRopeVector = CurrentRopeSwingAttachActor->GetActorLocation() - GetActorLocation();
-	CurrentRopeVectorNormal = CurrentRopeVector.GetSafeNormal();
-	if (FMath::IsNearlyEqual(CurrentRopeVector.Size(), CurrentRopeLength, 0.1f) || CurrentRopeVector.Size() > CurrentRopeLength)
+	FVector CurrentRopeVectorNormal = CurrentRopeVector.GetSafeNormal();
+	
+	if ((CurrentRopeVector.Size() > CurrentRopeLength || FMath::IsNearlyEqual(CurrentRopeVector.Size(), CurrentRopeLength, 10.f)) && bIsRopeStretched == false)
 	{
 		bIsRopeStretched = true;
 	}
-	else
-	{
-		bIsRopeStretched = false;
-	}
-	
-	FVector RopeAccel = FVector::DotProduct(-CurrentRopeVectorNormal, GetVelocity().GetSafeNormal()) * CurrentRopeVector * FMath::Abs(GetCharacterMovement()->GetGravityZ()) * RopeForceRatio;
-	DrawDebugRopeSwing();
-	
+		
 	if (bIsRopeStretched)
 	{
-		GetCharacterMovement()->AddForce(RopeAccel);		
+		FVector RopeImpulse = CurrentRopeVectorNormal * GetVelocity().Size() * GetCharacterMovement()->Mass * RopeImpulseRatio * FVector::DotProduct(CurrentRopeVectorNormal, -GetVelocity().GetSafeNormal());
+		if (FVector::DotProduct(CurrentRopeVectorNormal, FVector::UpVector) < 0.f || FVector::DotProduct(CurrentRopeVectorNormal, GetVelocity().GetSafeNormal()) > 0.f)
+		{
+			bIsRopeStretched = false;
+			return;
+		}
+		
+		GetCharacterMovement()->AddImpulse(RopeImpulse);
+		//DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + RopeImpulse.GetSafeNormal() * 150.f, FColor::Red, false, -1, 0, 4);
 	}
-	
-	//DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + RopeAccel / 10.f, FColor::Purple, false, -1.f, 0, 2);
-}
-
-void ASwingProjCharacter::DrawDebugRopeSwing()
-{
-	if (!bIsRopeStretched)
-	{
-		DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + CurrentRopeVector, FColor::Green, false, -1, 0, 2);
-	}
-	else
-	{
-		DrawDebugLine(GetWorld(), GetActorLocation(), GetActorLocation() + CurrentRopeVector, FColor::Red, false, -1, 0, 2);
-	}
-	
 }
 
 void ASwingProjCharacter::TurnAtRate(float Rate)
@@ -202,45 +257,35 @@ void ASwingProjCharacter::MoveRight(float Value)
 
 void ASwingProjCharacter::AttachToRope()
 {
-	if (bIsSwinging)
-	{
-		return;
-	}
-	CurrentRopeSwingAttachActor = nullptr;
+	//TODO
+	OnRopeAttached();
+}
 
-	for (uint8 i = 0; i < GetCurrentAvailableInteractiveActors().Num(); ++i)
-	{
-		AInteractiveActor* CurrentActor = GetCurrentAvailableInteractiveActors()[i];
-		if (CurrentActor->IsA<ARopeSwingAttachmentActor>())
-		{
-			CurrentRopeSwingAttachActor = StaticCast<ARopeSwingAttachmentActor*>(CurrentActor);
-			break;
-		}
-	}
-
-	if (!IsValid(CurrentRopeSwingAttachActor))
-	{
-		return;
-	}
-	
-	CurrentRopeVector = CurrentRopeSwingAttachActor->GetActorLocation() - GetActorLocation();
+void ASwingProjCharacter::OnRopeAttached()
+{
 	CurrentRopeLength = CurrentRopeVector.Size();
 	bIsSwinging = true;
+	bIsRopeStretched = false;
+	
+	if (IsValid(Rope) && IsValid(CurrentRopeSwingAttachActor))
+	{
+		HookMesh->AttachToComponent(CurrentRopeSwingAttachActor->GetMesh(), FAttachmentTransformRules::KeepWorldTransform);
+		HookMesh->SetWorldLocation(CurrentRopeSwingAttachActor->GetActorLocation());
+		Rope->SetWorldLocation(GetMesh()->GetSocketLocation(FName(TEXT("HandGrabSocket"))));
+		Rope->AttachToComponent(GetMesh(), FAttachmentTransformRules::KeepWorldTransform, FName(TEXT("HandGrabSocket")));
+		Rope->CableLength = CurrentRopeLength * 0.7f;
+	}
 }
 
 void ASwingProjCharacter::DettachFromRope()
 {
-	if (!GetBaseCharacterMovementComponent()->IsFalling() || !bIsSwinging)
-	{
-		return;
-	}
+	EquipRope();
 	bIsSwinging = false;
-	
 	if (IsValid(CurrentRopeSwingAttachActor))
 	{
 		CurrentRopeSwingAttachActor = nullptr;
 	}
-	CurrentRopeVectorNormal = FVector::ZeroVector;
+	CurrentRopeVector = FVector::ZeroVector;
 	CurrentRopeLength = 0.f;
 	bIsRopeStretched = false;
 }
