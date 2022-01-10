@@ -158,15 +158,17 @@ void ASwingProjCharacter::ThrowRope()
 		DettachFromRope();
 		return;
 	}
+	
 	CurrentRopeSwingAttachActor = nullptr;
-
+	float MinCosine = 0.35f;
 	for (uint8 i = 0; i < GetCurrentAvailableInteractiveActors().Num(); ++i)
 	{
 		AInteractiveActor* CurrentActor = GetCurrentAvailableInteractiveActors()[i];
-		if (CurrentActor->IsA<ARopeSwingAttachmentActor>() && FVector::DotProduct(FollowCamera->GetForwardVector(), (CurrentActor->GetActorLocation() - GetActorLocation()).GetSafeNormal()) > 0.35f)
+		float CurrentCosine = FVector::DotProduct(FollowCamera->GetForwardVector(), (CurrentActor->GetActorLocation() - GetActorLocation()).GetSafeNormal());
+		if (CurrentActor->IsA<ARopeSwingAttachmentActor>() && CurrentCosine > MinCosine)
 		{
+			MinCosine = CurrentCosine; 
 			CurrentRopeSwingAttachActor = StaticCast<ARopeSwingAttachmentActor*>(CurrentActor);
-			break;
 		}
 	}
 
